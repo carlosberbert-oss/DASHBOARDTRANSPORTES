@@ -157,6 +157,11 @@
   table.matrix .num-cell{font-family:'IBM Plex Mono'; color:#334;}
   table.matrix tr.total td{border-top:2px solid var(--line); font-weight:700; background:#F4F6FA;}
   table.matrix tr.total td.idc{background:#EEF1F6;}
+  table.matrix td.range{font-family:'IBM Plex Mono'; font-size:11.5px; text-align:left; padding-left:8px; background:#FAFBFD; color:#26324a; white-space:nowrap;}
+  table.matrix tr.total td.range{background:#EEF1F6; font-weight:700;}
+  .cep-controls{font-size:12.5px; color:var(--muted); margin-bottom:12px;}
+  .cep-controls input{width:64px; border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-family:'IBM Plex Mono'; font-size:13px; color:var(--ink); margin:0 2px;}
+  .cep-controls input:focus{outline:2px solid rgba(27,77,228,.35); border-color:var(--blue);}
   .otd.good{color:var(--good)} .otd.warn{color:var(--warn)} .otd.bad{color:var(--bad)}
   .mx-legend{display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-bottom:12px; font-size:11.5px; color:var(--muted);}
   .mx-legend .it{display:flex; align-items:center; gap:6px;}
@@ -180,6 +185,13 @@
   table.cep-table .uf-badge{font-family:'Space Grotesk'; font-weight:600; font-size:11px; color:var(--muted); margin-right:7px;}
   table.cep-table .tag{font-size:10px; font-family:'IBM Plex Mono'; padding:1px 6px; border-radius:5px; background:var(--bg); color:var(--muted); margin-left:8px;}
   table.cep-table .otd-cell{font-family:'IBM Plex Mono'; font-weight:500; display:inline-flex; align-items:center; gap:7px;}
+
+  /* Tendência OTD por transportadora */
+  .trend-wrap{position:relative;}
+  .trend-wrap svg{width:100%; height:auto; display:block; overflow:visible;}
+  .trend-legend{display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:12.5px; color:var(--ink);}
+  .trend-legend .it{display:flex; align-items:center; gap:7px;}
+  .trend-legend .ln{width:18px; height:3px; border-radius:2px; display:inline-block;}
 
   /* Setup / states */
   .overlay{position:fixed; inset:0; background:rgba(244,246,250,.7); backdrop-filter:blur(3px); z-index:100; display:none; align-items:center; justify-content:center; padding:20px;}
@@ -271,6 +283,17 @@
 
     <section class="panel full">
       <div class="panel-head">
+        <h2>% On Time por transportadora · por semana</h2>
+        <span class="hint">on time = coluna de status · passe o mouse para ver a semana</span>
+      </div>
+      <div class="panel-body">
+        <div class="trend-legend" id="trendLegend"></div>
+        <div class="trend-wrap" id="trendChart"></div>
+      </div>
+    </section>
+
+    <section class="panel full">
+      <div class="panel-head">
         <h2>Matriz de desvio · região / UF / capital-interior</h2>
         <span class="hint">dias entre entrega e previsão</span>
       </div>
@@ -283,11 +306,14 @@
     <section class="panel full">
       <div class="panel-head">
         <h2>Ranges de CEP indo mal</h2>
-        <span class="hint">piores cidades por % no prazo (mín. 5 pedidos)</span>
+        <span class="hint">faixas com OTD abaixo de 88% · da pior para a menos pior</span>
       </div>
       <div class="panel-body">
         <div class="capint" id="capint"></div>
-        <div class="cep-table-wrap"><table class="cep-table" id="cepTable"></table></div>
+        <div class="cep-controls">Considerar só faixas com no mínimo
+          <input type="number" id="cepMin" value="10" min="1" step="1" onchange="renderCep()"> pedidos.</div>
+        <div class="mx-legend" id="cepLegend"></div>
+        <div class="matrix-wrap"><table class="matrix" id="cepMatrix"></table></div>
       </div>
     </section>
   </div>
@@ -358,7 +384,16 @@ function resolveCep(v){
   if(ans<0 || n>CEP_LOOKUP.ends[ans]) return null;
   const uf = CEP_LOOKUP.ufs[ans], city = CEP_LOOKUP.cities[ans];
   const capital = normalize(city)===normalize(CAPITAIS[uf]||"");
-  return {uf, city, capital};
+  return {uf, city, capital, idx:ans, start:CEP_LOOKUP.starts[ans], end:CEP_LOOKUP.ends[ans]};
+}
+function fmtCep8(n){ const s=String(n).padStart(8,"0"); return s.slice(0,5)+"-"+s.slice(5); }
+function fmtRange(a,b){ return fmtCep8(a)+" a "+fmtCep8(b); }
+function mxCellStyle(v,sign,cellMax){
+  if(!v) return "";
+  const t = Math.pow(v/cellMax, .7);
+  if(sign<0)   return `background:rgba(64,160,80,${(0.12+t*0.60).toFixed(2)});`;
+  if(sign===0) return `background:rgba(233,205,70,${(0.14+t*0.34).toFixed(2)});`;
+  return `background:rgba(221,72,77,${(0.12+t*0.60).toFixed(2)});`;
 }
 function regiaoDe(row){
   const C=CONFIG.COLS;
@@ -591,7 +626,7 @@ function render(){
   const A = aggregate();
   document.getElementById("kpis").style.display="grid";
   document.getElementById("grid").style.display="grid";
-  renderKpis(A); renderMap(A); renderSla(A); renderCarriers(A); renderMatrix(); renderCep();
+  renderKpis(A); renderMap(A); renderSla(A); renderCarriers(A); renderCarrierTrend(); renderMatrix(); renderCep();
   document.getElementById("meta").innerHTML =
     '<b>'+fmtInt(A.total)+'</b> pedidos no filtro · atualizado '+new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 }
@@ -675,6 +710,77 @@ function renderCarriers(A){
     </div>`).join("");
 }
 
+/* ---- % On Time por transportadora por semana (linha) ---- */
+let TREND = null;
+function carrierColor(name){
+  const n = normalize(name);
+  if(n.includes("jamef"))  return "#16324f";
+  if(n.includes("fitlog")) return "#7fb2d9";
+  if(n.includes("mira"))   return "#E8963A";
+  const pal=["#1B4DE4","#12A150","#8E5AD8","#C0392B","#0E9AA7","#D48806"];
+  let h=0; for(const c of n) h=(h*31+c.charCodeAt(0))>>>0;
+  return pal[h%pal.length];
+}
+function renderCarrierTrend(){
+  const C = CONFIG.COLS;
+  const weeksSet=new Set(), carriersSet=new Set(), agg={};
+  FILTERED.forEach(r=>{
+    const wk=(r[C.semana]||"").toString().trim(); if(!wk) return;
+    const car=(r[C.transportadora]||"").toString().trim(); if(!car) return;
+    const st=classifyStatus(r[C.status]); if(!st) return;
+    weeksSet.add(wk); carriersSet.add(car);
+    const a=agg[car]||(agg[car]={}); const w=a[wk]||(a[wk]={on:0,base:0});
+    w.base++; if(st==="ontime") w.on++;
+  });
+  const weeks=[...weeksSet].sort(naturalCmp);
+  const carriers=[...carriersSet].sort((a,b)=>a.localeCompare(b,"pt-BR"));
+  const host=document.getElementById("trendChart"), legend=document.getElementById("trendLegend");
+  if(!weeks.length || !carriers.length){
+    host.innerHTML=""; legend.innerHTML='<span style="color:var(--muted);font-size:12px">Sem dados de semana/transportadora no filtro atual.</span>'; TREND=null; return;
+  }
+  const series=carriers.map(car=>({name:car, color:carrierColor(car),
+    points:weeks.map((wk,i)=>{ const w=agg[car][wk]; return (w&&w.base)?{i,pct:w.on/w.base*100,base:w.base}:{i,pct:null}; })}));
+
+  const W=960,H=340,ml=46,mr=18,mt=18,mb=42, pw=W-ml-mr, ph=H-mt-mb;
+  const xAt=i=> weeks.length===1 ? ml+pw/2 : ml+pw*i/(weeks.length-1);
+  const yAt=p=> mt+ph*(1-p/100);
+  let svg=`<svg viewBox="0 0 ${W} ${H}">`;
+  [0,20,40,60,80,100].forEach(g=>{ const y=yAt(g).toFixed(1);
+    svg+=`<line x1="${ml}" y1="${y}" x2="${W-mr}" y2="${y}" stroke="#EDF1F7"/><text x="${ml-8}" y="${(+y+3)}" font-size="10" fill="#8A97A8" text-anchor="end" font-family="'IBM Plex Mono',monospace">${g}%</text>`; });
+  weeks.forEach((wk,i)=>{ svg+=`<text x="${xAt(i).toFixed(1)}" y="${H-mb+18}" font-size="10" fill="#5B6B82" text-anchor="middle" font-family="'IBM Plex Mono',monospace">${wk}</text>`; });
+  series.forEach(s=>{
+    const pts=s.points.filter(p=>p.pct!=null);
+    if(!pts.length) return;
+    svg+=`<polyline points="${pts.map(p=>xAt(p.i).toFixed(1)+','+yAt(p.pct).toFixed(1)).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach(p=>{ svg+=`<circle cx="${xAt(p.i).toFixed(1)}" cy="${yAt(p.pct).toFixed(1)}" r="3.2" fill="#fff" stroke="${s.color}" stroke-width="2"/>`; });
+  });
+  svg+=`<line id="trendCross" x1="0" y1="${mt}" x2="0" y2="${mt+ph}" stroke="#0E1B2E" stroke-width="1" stroke-dasharray="3 3" style="opacity:0"/></svg>`;
+  host.innerHTML=svg;
+  legend.innerHTML=series.map(s=>`<div class="it"><span class="ln" style="background:${s.color}"></span>${s.name}</div>`).join("");
+  TREND={weeks,series,geom:{ml,mr,mt,mb,pw,ph,W,H,xAt,yAt}};
+  attachTrendHover();
+}
+function attachTrendHover(){
+  const host=document.getElementById("trendChart"); const svg=host.querySelector("svg"); if(!svg||!TREND) return;
+  const tip=document.getElementById("tooltip"); const cross=host.querySelector("#trendCross");
+  const {weeks,series,geom}=TREND;
+  svg.addEventListener("mousemove", ev=>{
+    const rect=svg.getBoundingClientRect();
+    const sx=(ev.clientX-rect.left)/rect.width*geom.W;
+    let i = weeks.length===1 ? 0 : Math.round((sx-geom.ml)/(geom.pw/(weeks.length-1)));
+    i=Math.max(0,Math.min(weeks.length-1,i));
+    const cx=geom.xAt(i).toFixed(1);
+    cross.setAttribute("x1",cx); cross.setAttribute("x2",cx); cross.style.opacity="1";
+    const rows=series.map(s=>({name:s.name,color:s.color,pct:s.points[i]?s.points[i].pct:null}))
+      .filter(r=>r.pct!=null).sort((a,b)=>b.pct-a.pct);
+    tip.innerHTML=`<div class="tt-uf"><span>${weeks[i]}</span></div>`+
+      rows.map(r=>`<div class="tt-row"><span><span style="color:${r.color}">●</span> ${r.name}</span><b>${fmtPct(r.pct)}</b></div>`).join("");
+    tip.style.left=Math.min(ev.clientX+14, innerWidth-230)+"px";
+    tip.style.top=(ev.clientY+14)+"px"; tip.classList.add("show");
+  });
+  svg.addEventListener("mouseleave", ()=>{ tip.classList.remove("show"); cross.style.opacity="0"; });
+}
+
 /* ---- Matriz de desvio · Região / UF / Capital-Interior ---- */
 const DESV_BUCKETS = [
   {key:"< -5", test:d=>d<-5, sign:-1},
@@ -714,13 +820,7 @@ function renderMatrix(){
 
   let cellMax = 1;
   Object.values(agg).forEach(A=>A.cells.forEach(v=>{ if(v>cellMax) cellMax=v; }));
-  const cellStyle = (v,sign)=>{
-    if(!v) return "";
-    const t = Math.pow(v/cellMax, .7);
-    if(sign<0)  return `background:rgba(64,160,80,${(0.12+t*0.60).toFixed(2)});`;
-    if(sign===0)return `background:rgba(233,205,70,${(0.14+t*0.34).toFixed(2)});`;
-    return `background:rgba(221,72,77,${(0.12+t*0.60).toFixed(2)});`;
-  };
+  const cellStyle = (v,sign)=>mxCellStyle(v,sign,cellMax);
 
   const list = Object.values(agg).sort((a,b)=>
     (REGIOES_ORD.indexOf(a.regiao)-REGIOES_ORD.indexOf(b.regiao)) ||
@@ -768,46 +868,80 @@ function renderMatrix(){
      ${semCep?`<div class="it" style="margin-left:auto">${fmtInt(semCep)} pedido(s) sem CEP reconhecido (fora da matriz)</div>`:""}`;
 }
 
-/* ---- Ranges de CEP indo mal ---- */
-const CEP_MIN_PEDIDOS = 5;
+/* ---- Matriz de desvio por range de CEP ---- */
 function renderCep(){
   const C = CONFIG.COLS;
-  const byCity = {};        // "UF|Cidade" -> {uf,city,capital,total,otd}
+  const byRange = {};   // idx -> {uf,tipo,city,start,end,total,anal,otd,cells[13]}
   let capT=0,capOn=0,intT=0,intOn=0,semCep=0;
   FILTERED.forEach(r=>{
     const info = resolveCep(r[C.cep]);
     if(!info){ semCep++; return; }
+    const tipo = info.capital ? "Capital" : "Interior";
     const d = desvioDias(r);
     const on = (d!=null) ? (d<=0) : (classifyStatus(r[C.status])==="ontime");
-    const k = info.uf+"|"+info.city;
-    const o = byCity[k] || (byCity[k]={uf:info.uf, city:info.city, capital:info.capital, total:0, otd:0});
-    o.total++; if(on) o.otd++;
     if(info.capital){ capT++; if(on) capOn++; } else { intT++; if(on) intOn++; }
+    const A = byRange[info.idx] || (byRange[info.idx]={uf:info.uf, tipo, city:info.city,
+      start:info.start, end:info.end, total:0, anal:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)});
+    A.total++;
+    if(d==null) return;
+    const bi = bucketIndex(d); if(bi<0) return;
+    A.anal++; A.cells[bi]++; if(d<=0) A.otd++;
   });
-  // resumo capital / interior
-  const ciBox = (lbl, t, on)=>{
-    const p = t? on/t*100 : NaN;
-    return `<div class="ci"><div class="lbl"><b>${lbl}</b>% no prazo</div>
-      <div style="text-align:right"><div class="big otd ${slaClass(p)}">${fmtPct(p)}</div><div class="cnt">${fmtInt(t)} pedidos</div></div></div>`;
-  };
-  document.getElementById("capint").innerHTML = ciBox("Capital", capT, capOn) + ciBox("Interior", intT, intOn);
 
-  // piores cidades
-  const list = Object.values(byCity).filter(o=>o.total>=CEP_MIN_PEDIDOS)
-    .map(o=>({...o, pct: o.otd/o.total*100}))
-    .sort((a,b)=> a.pct-b.pct || b.total-a.total).slice(0,25);
-  const tbl = document.getElementById("cepTable");
-  if(!list.length){
-    tbl.innerHTML = `<tbody><tr><td>Nenhuma cidade com ${CEP_MIN_PEDIDOS}+ pedidos no filtro atual${semCep?` (${fmtInt(semCep)} pedidos sem CEP reconhecido)`:""}.</td></tr></tbody>`;
-    return;
-  }
-  const head = `<thead><tr><th>Cidade (range de CEP)</th><th class="r">Pedidos</th><th class="r">% no prazo</th></tr></thead>`;
-  const body = list.map(o=>`<tr>
-    <td><span class="uf-badge">${o.uf}</span><span class="cidade">${o.city}</span><span class="tag">${o.capital?'capital':'interior'}</span></td>
-    <td class="r">${fmtInt(o.total)}</td>
-    <td class="r"><span class="otd-cell ${slaClass(o.pct)}"><span class="dot ${slaClass(o.pct)}"></span>${fmtPct(o.pct)}</span></td>
-  </tr>`).join("");
-  tbl.innerHTML = head + "<tbody>" + body + "</tbody>";
+  // resumo capital / interior (sobre todos os pedidos com CEP)
+  const ciBox=(lbl,t,on)=>{const p=t?on/t*100:NaN;
+    return `<div class="ci"><div class="lbl"><b>${lbl}</b>% no prazo</div>
+      <div style="text-align:right"><div class="big otd ${mxOtdClass(p)}">${fmtPct(p)}</div><div class="cnt">${fmtInt(t)} pedidos</div></div></div>`;};
+  document.getElementById("capint").innerHTML = ciBox("Capital",capT,capOn)+ciBox("Interior",intT,intOn);
+
+  // filtro: mín. de pedidos + só faixas "indo mal" (OTD < corte) + piores primeiro
+  const minPed = Math.max(1, parseInt((document.getElementById("cepMin")||{}).value,10) || 10);
+  const OTD_CORTE = 88;   // só mostra faixas abaixo disso
+  const list = Object.values(byRange)
+    .filter(A => A.total>=minPed && A.anal>0 && (A.otd/A.anal*100) < OTD_CORTE)
+    .sort((a,b)=>{
+      const pa = a.otd/a.anal*100, pb = b.otd/b.anal*100;
+      return pa-pb || b.total-a.total;
+    });
+  // TOTAL apenas das faixas exibidas (pra as colunas fecharem com o total)
+  const TOT = {total:0, anal:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)};
+  list.forEach(A=>{ TOT.total+=A.total; TOT.anal+=A.anal; TOT.otd+=A.otd; A.cells.forEach((v,i)=>TOT.cells[i]+=v); });
+
+  let cellMax=1; list.forEach(A=>A.cells.forEach(v=>{ if(v>cellMax) cellMax=v; }));
+
+  const rowHtml=(A,isTotal)=>{
+    const otd = A.anal ? A.otd/A.anal*100 : NaN;
+    const cells = A.cells.map((v,i)=>`<td class="num-cell" style="${mxCellStyle(v,DESV_BUCKETS[i].sign,cellMax)}">${v||""}</td>`).join("");
+    if(isTotal) return `<tr class="total"><td class="range" colspan="3">TOTAL EXIBIDO</td>
+      <td class="tot">${fmtInt(A.total)}</td><td class="otd ${mxOtdClass(otd)}">${fmtPct(otd)}</td>
+      <td class="tot">${fmtInt(A.anal)}</td>${cells}</tr>`;
+    return `<tr>
+      <td class="range">${fmtRange(A.start,A.end)}</td>
+      <td class="idc uf">${A.uf}</td>
+      <td class="idc tipo">${A.tipo}</td>
+      <td class="tot">${fmtInt(A.total)}</td>
+      <td class="otd ${mxOtdClass(otd)}">${fmtPct(otd)}</td>
+      <td class="tot">${fmtInt(A.anal)}</td>${cells}</tr>`;
+  };
+  const head = `<thead>
+    <tr>
+      <th class="idh" colspan="3">Identificação</th>
+      <th class="idh" colspan="3">Resumo</th>
+      ${DESV_BUCKETS.map(b=>`<th class="dvh" rowspan="2" style="background:${hdrColor(b.sign,b.key)}">${b.key}</th>`).join("")}
+    </tr>
+    <tr>
+      <th class="idh">Range de CEP</th><th class="idh">UF</th><th class="idh">Tipo</th>
+      <th class="idh">Total</th><th class="idh">OTD</th><th class="idh">Anál.</th>
+    </tr></thead>`;
+  const body = list.map(A=>rowHtml(A,false)).join("") + (TOT.total ? rowHtml(TOT,true) : "");
+  document.getElementById("cepMatrix").innerHTML = head + "<tbody>" +
+    (body || `<tr><td colspan="19" class="idc">Nenhuma faixa abaixo de ${OTD_CORTE}% com ${minPed}+ pedidos no filtro atual. 🎉</td></tr>`) + "</tbody>";
+
+  document.getElementById("cepLegend").innerHTML =
+    `<div class="it"><span class="sw" style="background:#4e9a4e"></span>Negativo = adiantado</div>
+     <div class="it"><span class="sw" style="background:#8f8420"></span>Zero = no prazo exato</div>
+     <div class="it"><span class="sw" style="background:#b0413f"></span>Positivo = atrasado</div>
+     <div class="it" style="margin-left:auto">${fmtInt(list.length)} faixas indo mal (OTD &lt; ${OTD_CORTE}%) com ${minPed}+ pedidos${semCep?` · ${fmtInt(semCep)} sem CEP reconhecido`:""}</div>`;
 }
 function highlight(uf,on){
   const wrap=document.getElementById("mapWrap");
