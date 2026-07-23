@@ -294,6 +294,17 @@
 
     <section class="panel full">
       <div class="panel-head">
+        <h2>Motivo dos atrasos</h2>
+        <span class="hint">Pareto · barras = ocorrências, linha = % acumulado</span>
+      </div>
+      <div class="panel-body">
+        <div class="trend-legend" id="paretoLegend"></div>
+        <div class="trend-wrap" id="paretoChart"></div>
+      </div>
+    </section>
+
+    <section class="panel full">
+      <div class="panel-head">
         <h2>Matriz de desvio · região / UF / capital-interior</h2>
         <span class="hint">dias entre entrega e previsão</span>
       </div>
@@ -353,6 +364,7 @@ const CONFIG = {
     dataCriacao: 3,          // D  data de criação
     status:      9,          // J  on time / late
     transportadora: 11,      // L
+    motivo:      17,         // R  motivo do atraso
     uf:          18,         // S  estado
     regiao:      19,         // T
     semana:      20,         // U
@@ -626,7 +638,7 @@ function render(){
   const A = aggregate();
   document.getElementById("kpis").style.display="grid";
   document.getElementById("grid").style.display="grid";
-  renderKpis(A); renderMap(A); renderSla(A); renderCarriers(A); renderCarrierTrend(); renderMatrix(); renderCep();
+  renderKpis(A); renderMap(A); renderSla(A); renderCarriers(A); renderCarrierTrend(); renderPareto(); renderMatrix(); renderCep();
   document.getElementById("meta").innerHTML =
     '<b>'+fmtInt(A.total)+'</b> pedidos no filtro · atualizado '+new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 }
@@ -779,6 +791,56 @@ function attachTrendHover(){
     tip.style.top=(ev.clientY+14)+"px"; tip.classList.add("show");
   });
   svg.addEventListener("mouseleave", ()=>{ tip.classList.remove("show"); cross.style.opacity="0"; });
+}
+
+/* ---- Pareto de motivos de atraso ---- */
+function wrap2(s,maxLen){ if((s||"").length<=maxLen) return [s]; const words=s.split(" "); let l1="",l2=""; for(const w of words){ if(l2==="" && (l1?l1+" "+w:w).length<=maxLen) l1=l1?l1+" "+w:w; else l2=l2?l2+" "+w:w; } return l2?[l1,l2]:[l1]; }
+function renderPareto(){
+  const C=CONFIG.COLS;
+  const esc=s=>(s||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const cnt={};
+  FILTERED.forEach(r=>{ const m=(r[C.motivo]||"").toString().trim(); if(!m) return; cnt[m]=(cnt[m]||0)+1; });
+  const host=document.getElementById("paretoChart"), legend=document.getElementById("paretoLegend");
+  const items=Object.entries(cnt).map(([motivo,c])=>({motivo,c})).sort((a,b)=>b.c-a.c);
+  if(!items.length){ host.innerHTML=""; legend.innerHTML='<span style="color:var(--muted);font-size:12px">Sem motivos de atraso no filtro atual.</span>'; return; }
+  const total=items.reduce((s,x)=>s+x.c,0); let acc=0; items.forEach(x=>{ acc+=x.c; x.cum=acc/total*100; });
+
+  const W=960,H=400,ml=44,mr=50,mt=30,mb=76, pw=W-ml-mr, ph=H-mt-mb;
+  const n=items.length, slot=pw/n, barW=Math.min(slot*0.56,64);
+  const maxC=Math.max(...items.map(x=>x.c)), niceMax=Math.max(10,Math.ceil(maxC/10)*10);
+  const yC=v=>mt+ph*(1-v/niceMax), yP=p=>mt+ph*(1-p/100), cx=k=>ml+slot*(k+0.5);
+  const BLUE="#3B76F0", RED="#E5484D";
+  let svg=`<svg viewBox="0 0 ${W} ${H}">`;
+  for(let t=0;t<=4;t++){ const y=mt+ph*t/4; const cv=Math.round(niceMax*(1-t/4)), pv=Math.round(100*(1-t/4));
+    svg+=`<line x1="${ml}" y1="${y.toFixed(1)}" x2="${W-mr}" y2="${y.toFixed(1)}" stroke="#EDF1F7"/>`;
+    svg+=`<text x="${ml-8}" y="${(y+3).toFixed(1)}" font-size="10" fill="#8A97A8" text-anchor="end" font-family="'IBM Plex Mono',monospace">${cv}</text>`;
+    svg+=`<text x="${W-mr+8}" y="${(y+3).toFixed(1)}" font-size="10" fill="#C25B54" text-anchor="start" font-family="'IBM Plex Mono',monospace">${pv}%</text>`;
+  }
+  items.forEach((x,k)=>{
+    const bx=cx(k)-barW/2, by=yC(x.c), bh=(mt+ph)-by, inside=bh>22;
+    svg+=`<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${BLUE}"/>`;
+    svg+=`<text x="${cx(k).toFixed(1)}" y="${(inside?by+16:by-6).toFixed(1)}" font-size="11" fill="${inside?'#fff':'#0E1B2E'}" text-anchor="middle" font-family="'Space Grotesk',sans-serif" font-weight="600">${x.c}</text>`;
+    wrap2(x.motivo,16).forEach((ln,li)=>{ svg+=`<text x="${cx(k).toFixed(1)}" y="${(mt+ph+16+li*12).toFixed(1)}" font-size="9.5" fill="#5B6B82" text-anchor="middle" font-family="Inter,sans-serif">${esc(ln)}</text>`; });
+  });
+  svg+=`<polyline points="${items.map((x,k)=>cx(k).toFixed(1)+','+yP(x.cum).toFixed(1)).join(' ')}" fill="none" stroke="${RED}" stroke-width="2.5" stroke-linejoin="round"/>`;
+  items.forEach((x,k)=>{ svg+=`<circle cx="${cx(k).toFixed(1)}" cy="${yP(x.cum).toFixed(1)}" r="3.2" fill="#fff" stroke="${RED}" stroke-width="2"/>`;
+    svg+=`<text x="${cx(k).toFixed(1)}" y="${(yP(x.cum)-8).toFixed(1)}" font-size="10" fill="${RED}" text-anchor="middle" font-family="'IBM Plex Mono',monospace" font-weight="600">${Math.round(x.cum)}%</text>`; });
+  items.forEach((x,k)=>{ svg+=`<rect class="pareto-hit" data-k="${k}" x="${(ml+slot*k).toFixed(1)}" y="${mt}" width="${slot.toFixed(1)}" height="${ph}" fill="transparent"/>`; });
+  svg+=`</svg>`;
+  host.innerHTML=svg;
+  legend.innerHTML=`<div class="it"><span class="ln" style="background:${BLUE}; height:12px; width:12px; border-radius:3px"></span>Ocorrências (atrasos)</div>
+    <div class="it"><span class="ln" style="background:${RED}"></span>% acumulado</div>`;
+  const tip=document.getElementById("tooltip");
+  host.querySelectorAll(".pareto-hit").forEach(el=>{
+    el.addEventListener("mousemove", ev=>{ const x=items[+el.dataset.k];
+      tip.innerHTML=`<div class="tt-uf"><span>${esc(x.motivo)}</span></div>
+        <div class="tt-row"><span>Ocorrências</span><b>${fmtInt(x.c)}</b></div>
+        <div class="tt-row"><span>% do total</span><b>${fmtPct(x.c/total*100)}</b></div>
+        <div class="tt-row"><span>Acumulado</span><b>${fmtPct(x.cum)}</b></div>`;
+      tip.style.left=Math.min(ev.clientX+14,innerWidth-220)+"px"; tip.style.top=(ev.clientY+14)+"px"; tip.classList.add("show");
+    });
+    el.addEventListener("mouseleave", ()=> tip.classList.remove("show"));
+  });
 }
 
 /* ---- Matriz de desvio · Região / UF / Capital-Interior ---- */
