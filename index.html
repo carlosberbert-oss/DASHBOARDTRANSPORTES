@@ -143,18 +143,24 @@
 
   /* Matriz de desvio */
   .matrix-wrap{overflow-x:auto;}
-  table.matrix{border-collapse:collapse; width:100%; font-size:12.5px; min-width:720px;}
-  table.matrix th, table.matrix td{padding:8px 6px; text-align:center; white-space:nowrap;}
-  table.matrix thead th{font-family:'IBM Plex Mono'; font-size:10.5px; font-weight:500; color:var(--muted); border-bottom:1px solid var(--line); letter-spacing:.02em;}
-  table.matrix thead th.grp{color:var(--ink); font-weight:600;}
+  table.matrix{border-collapse:collapse; width:100%; font-size:12.5px; min-width:860px;}
+  table.matrix th, table.matrix td{padding:7px 6px; text-align:center; white-space:nowrap;}
+  table.matrix thead th.idh{background:#20406e; color:#fff; font-weight:600; font-size:11px; border:1px solid #2c4f7c;}
+  table.matrix thead th.dvh{color:#fff; font-weight:600; font-size:11px; border:1px solid rgba(255,255,255,.25); min-width:40px;}
   table.matrix tbody td{border-bottom:1px solid #F1F4F9;}
-  table.matrix .reg{text-align:left; font-weight:500; padding-left:4px;}
+  table.matrix td.idc{background:#FAFBFD; text-align:left; padding-left:8px;}
+  table.matrix td.uf{font-family:'Space Grotesk'; font-weight:600; text-align:center;}
+  table.matrix td.tipo{font-size:11px; color:var(--muted);}
+  table.matrix .reg{font-weight:500;}
   table.matrix .tot{font-family:'Space Grotesk'; font-weight:600;}
-  table.matrix .otd{font-family:'IBM Plex Mono'; font-weight:500;}
-  table.matrix .num-cell{font-family:'IBM Plex Mono'; color:#334; border-radius:5px;}
-  table.matrix tr.total td{border-top:2px solid var(--line); font-weight:600; background:#FAFBFD;}
-  table.matrix tr.total .reg{font-family:'Space Grotesk';}
+  table.matrix .otd{font-family:'IBM Plex Mono'; font-weight:600;}
+  table.matrix .num-cell{font-family:'IBM Plex Mono'; color:#334;}
+  table.matrix tr.total td{border-top:2px solid var(--line); font-weight:700; background:#F4F6FA;}
+  table.matrix tr.total td.idc{background:#EEF1F6;}
   .otd.good{color:var(--good)} .otd.warn{color:var(--warn)} .otd.bad{color:var(--bad)}
+  .mx-legend{display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-bottom:12px; font-size:11.5px; color:var(--muted);}
+  .mx-legend .it{display:flex; align-items:center; gap:6px;}
+  .mx-legend .sw{width:13px; height:13px; border-radius:3px; display:inline-block;}
 
   /* Capital / Interior */
   .capint{display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;}
@@ -265,10 +271,13 @@
 
     <section class="panel full">
       <div class="panel-head">
-        <h2>Matriz de desvio por região</h2>
-        <span class="hint">dias entre entrega e previsão · verde = adiantado/no prazo, vermelho = atraso</span>
+        <h2>Matriz de desvio · região / UF / capital-interior</h2>
+        <span class="hint">dias entre entrega e previsão</span>
       </div>
-      <div class="panel-body"><div class="matrix-wrap"><table class="matrix" id="matrix"></table></div></div>
+      <div class="panel-body">
+        <div class="mx-legend" id="mxLegend"></div>
+        <div class="matrix-wrap"><table class="matrix" id="matrix"></table></div>
+      </div>
     </section>
 
     <section class="panel full">
@@ -666,55 +675,97 @@ function renderCarriers(A){
     </div>`).join("");
 }
 
-/* ---- Matriz de desvio por região ---- */
+/* ---- Matriz de desvio · Região / UF / Capital-Interior ---- */
 const DESV_BUCKETS = [
-  {key:"<-5", test:d=>d<-5, sign:-1},
+  {key:"< -5", test:d=>d<-5, sign:-1},
   {key:"-5", test:d=>d===-5, sign:-1},{key:"-4",test:d=>d===-4,sign:-1},{key:"-3",test:d=>d===-3,sign:-1},
   {key:"-2",test:d=>d===-2,sign:-1},{key:"-1",test:d=>d===-1,sign:-1},
-  {key:"0", test:d=>d===0, sign:-1},
+  {key:"0", test:d=>d===0, sign:0},
   {key:"+1",test:d=>d===1,sign:1},{key:"+2",test:d=>d===2,sign:1},{key:"+3",test:d=>d===3,sign:1},
   {key:"+4",test:d=>d===4,sign:1},{key:"+5",test:d=>d===5,sign:1},
-  {key:">+5",test:d=>d>5, sign:1}
+  {key:"> +5",test:d=>d>5, sign:1}
 ];
 function bucketIndex(d){ for(let i=0;i<DESV_BUCKETS.length;i++) if(DESV_BUCKETS[i].test(d)) return i; return -1; }
+function mxOtdClass(p){ return !isFinite(p) ? "" : p>=88 ? "good" : p>=46 ? "warn" : "bad"; }
+function hdrColor(sign,key){
+  if(sign<0) return key==="< -5" ? "#3f8a3f" : "#4e9a4e";      // verde
+  if(sign===0) return "#8f8420";                                // gold/oliva
+  return key==="> +5" ? "#9c3634" : "#b0413f";                  // vermelho
+}
 function renderMatrix(){
-  const rows = {}; // regiao -> {total, otd, cells[13]}
-  const ensure = r => rows[r] || (rows[r]={total:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)});
-  const totalRow = {total:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)};
+  const C = CONFIG.COLS;
+  const agg = {}; // "uf|tipo" -> {uf,tipo,regiao, total, anal, otd, cells[13]}
+  const TOT = {total:0, anal:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)};
+  let semCep = 0;
   FILTERED.forEach(r=>{
-    const d = desvioDias(r); if(d==null) return;
-    const reg = regiaoDe(r); if(!reg) return;
+    const info = resolveCep(r[C.cep]);
+    if(!info){ semCep++; return; }               // sem CEP não dá pra dizer capital/interior
+    const uf = info.uf, tipo = info.capital ? "Capital" : "Interior";
+    const reg = UF2REG[uf] || regiaoDe(r) || "—";
+    const k = uf+"|"+tipo;
+    const A = agg[k] || (agg[k]={uf, tipo, regiao:reg, total:0, anal:0, otd:0, cells:new Array(DESV_BUCKETS.length).fill(0)});
+    A.total++; TOT.total++;
+    const d = desvioDias(r);
+    if(d==null) return;
     const bi = bucketIndex(d); if(bi<0) return;
-    const R = ensure(reg);
-    R.total++; R.cells[bi]++; if(d<=0) R.otd++;
-    totalRow.total++; totalRow.cells[bi]++; if(d<=0) totalRow.otd++;
+    A.anal++; A.cells[bi]++; if(d<=0) A.otd++;
+    TOT.anal++; TOT.cells[bi]++; if(d<=0) TOT.otd++;
   });
-  // max de célula p/ intensidade de cor (só regiões, não o total)
-  let cellMax = 1;
-  Object.values(rows).forEach(R=>R.cells.forEach(v=>{ if(v>cellMax) cellMax=v; }));
 
+  let cellMax = 1;
+  Object.values(agg).forEach(A=>A.cells.forEach(v=>{ if(v>cellMax) cellMax=v; }));
   const cellStyle = (v,sign)=>{
     if(!v) return "";
     const t = Math.pow(v/cellMax, .7);
-    const base = sign<0 ? [18,161,80] : [229,72,77];      // verde / vermelho
-    const lo = 0.10 + t*0.55;                              // opacidade suave (sem cores fortes)
-    return `background:rgba(${base[0]},${base[1]},${base[2]},${lo.toFixed(2)});`;
+    if(sign<0)  return `background:rgba(64,160,80,${(0.12+t*0.60).toFixed(2)});`;
+    if(sign===0)return `background:rgba(233,205,70,${(0.14+t*0.34).toFixed(2)});`;
+    return `background:rgba(221,72,77,${(0.12+t*0.60).toFixed(2)});`;
   };
-  const rowHtml = (name, R, isTotal)=>{
-    const otd = R.total ? R.otd/R.total*100 : NaN;
-    const cells = R.cells.map((v,i)=>`<td class="num-cell" style="${cellStyle(v,DESV_BUCKETS[i].sign)}">${v||""}</td>`).join("");
-    return `<tr class="${isTotal?'total':''}">
-      <td class="reg">${name}</td>
-      <td class="tot">${fmtInt(R.total)}</td>
-      <td class="otd ${slaClass(otd)}">${fmtPct(otd)}</td>
-      ${cells}</tr>`;
+
+  const list = Object.values(agg).sort((a,b)=>
+    (REGIOES_ORD.indexOf(a.regiao)-REGIOES_ORD.indexOf(b.regiao)) ||
+    a.uf.localeCompare(b.uf) ||
+    (a.tipo==="Capital"?-1:1) - (b.tipo==="Capital"?-1:1)
+  );
+
+  const rowHtml = (A,isTotal)=>{
+    const otd = A.anal ? A.otd/A.anal*100 : NaN;
+    const cells = A.cells.map((v,i)=>`<td class="num-cell" style="${cellStyle(v,DESV_BUCKETS[i].sign)}">${v||""}</td>`).join("");
+    if(isTotal){
+      return `<tr class="total">
+        <td class="idc reg" colspan="3">TODAS</td>
+        <td class="tot">${fmtInt(A.total)}</td>
+        <td class="otd ${mxOtdClass(otd)}">${fmtPct(otd)}</td>
+        <td class="tot">${fmtInt(A.anal)}</td>${cells}</tr>`;
+    }
+    return `<tr>
+      <td class="idc reg">${A.regiao}</td>
+      <td class="idc uf">${A.uf}</td>
+      <td class="idc tipo">${A.tipo}</td>
+      <td class="tot">${fmtInt(A.total)}</td>
+      <td class="otd ${mxOtdClass(otd)}">${fmtPct(otd)}</td>
+      <td class="tot">${fmtInt(A.anal)}</td>${cells}</tr>`;
   };
-  const head = `<thead><tr>
-    <th class="grp reg" style="text-align:left">Região</th><th class="grp">Total</th><th class="grp">OTD</th>
-    ${DESV_BUCKETS.map(b=>`<th>${b.key}</th>`).join("")}</tr></thead>`;
-  const body = REGIOES_ORD.filter(r=>rows[r]).map(r=>rowHtml(r, rows[r], false)).join("")
-             + (totalRow.total ? rowHtml("TOTAL", totalRow, true) : "");
-  document.getElementById("matrix").innerHTML = head + "<tbody>" + (body || `<tr><td class="reg" colspan="16">Sem dados de desvio no filtro atual.</td></tr>`) + "</tbody>";
+
+  const head = `<thead>
+    <tr>
+      <th class="idh" colspan="3">Identificação</th>
+      <th class="idh" colspan="3">Resumo</th>
+      ${DESV_BUCKETS.map(b=>`<th class="dvh" rowspan="2" style="background:${hdrColor(b.sign,b.key)}">${b.key}</th>`).join("")}
+    </tr>
+    <tr>
+      <th class="idh">Região</th><th class="idh">UF</th><th class="idh">Tipo</th>
+      <th class="idh">Total</th><th class="idh">OTD</th><th class="idh">Anál.</th>
+    </tr></thead>`;
+  const body = list.map(A=>rowHtml(A,false)).join("") + (TOT.total ? rowHtml(TOT,true) : "");
+  document.getElementById("matrix").innerHTML = head + "<tbody>" +
+    (body || `<tr><td colspan="19" class="idc">Sem dados de desvio no filtro atual.</td></tr>`) + "</tbody>";
+
+  document.getElementById("mxLegend").innerHTML =
+    `<div class="it"><span class="sw" style="background:#4e9a4e"></span>Negativo = adiantado (entregou antes do prazo)</div>
+     <div class="it"><span class="sw" style="background:#8f8420"></span>Zero = no prazo exato</div>
+     <div class="it"><span class="sw" style="background:#b0413f"></span>Positivo = atrasado (entregou depois do prazo)</div>
+     ${semCep?`<div class="it" style="margin-left:auto">${fmtInt(semCep)} pedido(s) sem CEP reconhecido (fora da matriz)</div>`:""}`;
 }
 
 /* ---- Ranges de CEP indo mal ---- */
